@@ -1,85 +1,83 @@
 import streamlit as st
 import numpy as np
-import cv2
 from PIL import Image
 import hashlib
 import time
 
-# --- Hàm lõi tính toán Bedrock (Minecraft Java 1.18+) ---
+# --- Hàm tính toán Bedrock (Mô phỏng Java) ---
 def is_bedrock(seed, x, y, z):
     if y == -64: return True
     if y > -59 or y < -64: return False
     
-    # Mô phỏng hash của Minecraft để xác định khối
+    # Logic Hashing của Minecraft
     combined = f"{seed}_{x}_{y}_{z}".encode()
     hash_val = int(hashlib.md5(combined).hexdigest()[:8], 16) % 100
     threshold = 100 - ((y - (-64)) * 20)
     return hash_val < threshold
 
-# --- Xử lý ảnh chụp màn hình ---
-def process_image(uploaded_file):
-    image = Image.open(uploaded_file).convert('L') # Chuyển sang ảnh xám
-    img_array = np.array(image)
-    # Resize về kích thước nhỏ (ví dụ 10x10) để làm mẫu pattern
-    img_small = cv2.resize(img_array, (10, 10), interpolation=cv2.INTER_AREA)
-    # Chuyển về nhị phân (Đen = Deepslate, Trắng = Bedrock)
-    _, binary = cv2.threshold(img_small, 127, 1, cv2.THRESH_BINARY)
-    return binary
+# --- Xử lý ảnh bằng Pillow (Thay thế OpenCV) ---
+def process_image_pil(uploaded_file, size=(10, 10)):
+    img = Image.open(uploaded_file).convert('L') # Chuyển ảnh xám
+    img = img.resize(size, Image.Resampling.LANCZOS) # Resize về mẫu nhỏ
+    img_array = np.array(img)
+    # Ngưỡng nhị phân: Trên 128 là trắng (Bedrock), dưới là đen
+    binary_pattern = (img_array > 128).astype(int)
+    return binary_pattern
 
 # --- Giao diện Streamlit ---
-st.set_page_config(page_title="Minecraft Bedrock Finder", layout="wide")
-st.title("⛏️ Bedrock Coordinate Predictor (Overworld)")
-st.write("Dùng để tìm tọa độ chính xác dựa trên ảnh chụp sàn Bedrock và Seed.")
+st.set_page_config(page_title="Minecraft Bedrock Finder", page_icon="⛏️")
+st.title("⛏️ Bedrock Finder (Overworld 1.18+)")
 
 with st.sidebar:
-    st.header("Cấu hình")
-    seed = st.number_input("World Seed", value=0, step=1)
-    target_y = st.slider("Tầng Y (Thường là -62)", -63, -60, -62)
-    radius = st.number_input("Bán kính quét (Blocks)", value=1000, step=500)
-    est_x = st.number_input("X dự tính (Gần vị trí bạn đứng)", value=0)
-    est_z = st.number_input("Z dự tính (Gần vị trí bạn đứng)", value=0)
+    st.header("⚙️ Cấu hình")
+    seed = st.number_input("World Seed", value=0)
+    target_y = st.slider("Tầng Y cần quét", -63, -60, -62)
+    st.divider()
+    st.info("Vì diện tích 500k x 500k rất lớn, hãy nhập tọa độ gần đúng để thu hẹp vùng tìm kiếm.")
+    est_x = st.number_input("X gần đúng", value=0)
+    est_z = st.number_input("Z gần đúng", value=0)
+    radius = st.number_input("Bán kính quét (nên < 2000)", value=500, step=100)
 
-uploaded_file = st.file_uploader("Upload ảnh chụp sàn Bedrock (Chụp thẳng từ trên xuống)", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.file_uploader("Upload ảnh chụp sàn Bedrock", type=['png', 'jpg', 'jpeg'])
 
-if uploaded_file and st.button("Bắt đầu tính toán"):
-    pattern = process_image(uploaded_file)
-    st.write("Mẫu nhận diện được (Pattern):")
-    st.image((pattern * 255).astype(np.uint8), width=150)
+if uploaded_file:
+    pattern = process_image_pil(uploaded_file)
+    st.subheader("Mẫu nhận diện (10x10):")
+    st.image(Image.fromarray((pattern * 255).astype(np.uint8)), width=150)
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    found = False
+    if st.button("🚀 Bắt đầu quét tọa độ"):
+        found = False
+        start_time = time.time()
+        progress_bar = st.progress(0)
+        status = st.empty()
 
-    # Thuật toán quét tối ưu
-    start_time = time.time()
-    
-    # Quét trong phạm vi bán kính
-    for i, x in enumerate(range(est_x - radius, est_x + radius)):
-        # Cập nhật thanh tiến trình mỗi 100 block
-        if i % 100 == 0:
-            progress_bar.progress(i / (radius * 2))
-            status_text.text(f"Đang quét X: {x}...")
+        # Quét khu vực quanh tọa độ dự đoán
+        total_steps = radius * 2
+        for i, x in enumerate(range(est_x - radius, est_x + radius)):
+            # Cập nhật UI mỗi 50 hàng để tăng tốc độ
+            if i % 50 == 0:
+                progress_bar.progress(i / total_steps)
+                status.text(f"🔍 Đang kiểm tra cột X: {x}...")
 
-        for z in range(est_z - radius, est_z + radius):
-            match = True
-            # So khớp mẫu 10x10
-            for r in range(10):
-                for c in range(10):
-                    expected = (pattern[r][c] == 1)
-                    actual = is_bedrock(seed, x + c, target_y, z + r)
-                    if actual != expected:
-                        match = False
-                        break
-                if not match: break
-            
-            if match:
-                st.success(f"🎯 ĐÃ TÌM THẤY! Tọa độ X: {x}, Z: {z}")
-                st.balloons()
-                found = True
-                break
-        if found: break
+            for z in range(est_z - radius, est_z + radius):
+                match = True
+                # So khớp nhanh mẫu 10x10
+                for r in range(10):
+                    for c in range(10):
+                        if is_bedrock(seed, x + c, target_y, z + r) != (pattern[r][c] == 1):
+                            match = False
+                            break
+                    if not match: break
+                
+                if match:
+                    st.success(f"🎯 TÌM THẤY! Tọa độ chính xác: X: {x}, Z: {z}")
+                    st.code(f"/tp @s {x} {target_y} {z}")
+                    st.balloons()
+                    found = True
+                    break
+            if found: break
 
-    if not found:
-        st.error("Không tìm thấy tọa độ khớp trong vùng này. Hãy thử tăng bán kính hoặc kiểm tra lại ảnh.")
-    
-    st.write(f"Thời gian quét: {round(time.time() - start_time, 2)} giây")
+        if not found:
+            st.warning("❌ Không tìm thấy mẫu khớp. Hãy thử tăng bán kính hoặc đổi tầng Y.")
+        
+        st.write(f"⏱️ Thời gian thực thi: {round(time.time() - start_time, 2)} giây")
